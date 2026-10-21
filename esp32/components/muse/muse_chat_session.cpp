@@ -1127,8 +1127,8 @@ static bool open_note(void)
     if (!s_turn.chat_id) {
         return false;
     }
-    s_turn.body_sent = sizeof(MUSE_HATCH_NOTE_HEAD) - 1;
-    if (!send_body(s_turn.chat_id, reinterpret_cast<const uint8_t *>(MUSE_HATCH_NOTE_HEAD), sizeof(MUSE_HATCH_NOTE_HEAD) - 1, false)) {
+    s_turn.body_sent = sizeof(MUSE_HATCH_NOTE_HEAD_VOICE) - 1;
+    if (!send_body(s_turn.chat_id, reinterpret_cast<const uint8_t *>(MUSE_HATCH_NOTE_HEAD_VOICE), sizeof(MUSE_HATCH_NOTE_HEAD_VOICE) - 1, false)) {
         return false;
     }
     muse_hatch_wav_header(s_turn.note, MIC_RATE);

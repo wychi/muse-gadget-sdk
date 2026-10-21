@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_muse_voice_note import (  # noqa: E402
-    ENV, MUSE, ROOT, SANITIZE, NoteRequestAssertions, parse_run, pcm_bytes)
+    ENV, HEAD_TEXT, MUSE, ROOT, SANITIZE, NoteRequestAssertions, parse_run, pcm_bytes)
 
 CODE = r'''
 #include <stdbool.h>
@@ -145,6 +145,7 @@ int main(int argc, char **argv)
 
 class LinkVoiceNote(NoteRequestAssertions, unittest.TestCase):
     PART_PCM, PART_CHARS = 1536, 2048   # STAGE_BYTES and CHUNK_BYTES
+    head = HEAD_TEXT   # the link session asks for text replies
 
     @classmethod
     def setUpClass(cls):

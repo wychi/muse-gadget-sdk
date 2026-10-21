@@ -48,8 +48,11 @@ def riff_header(rate):
 
 # The POST /chat/stream envelope around the base64 WAV, written out rather than
 # read from muse_chat_priv.h: changing what the device sends must change this.
-HEAD = (b'{"message":"","output_modality":"text","items":[{"type":"file",'
+HEAD = (b'{"message":"","output_modality":"voice","items":[{"type":"file",'
         b'"mime_type":"audio/wav","filename":"voice_note.wav","data_base64":"')
+# The link session's envelope: same shape, but it asks for text replies.
+HEAD_TEXT = (b'{"message":"","output_modality":"text","items":[{"type":"file",'
+             b'"mime_type":"audio/wav","filename":"voice_note.wav","data_base64":"')
 TAIL = b'"}]}'
 
 
@@ -57,11 +60,12 @@ def pcm_bytes(n, seed):
     return random.Random(seed).randbytes(n)
 
 
-def expected_parts(wav_len, part_pcm, part_chars):
+def expected_parts(wav_len, part_pcm, part_chars, head_len=None):
     """Chunk lengths of a note request: the head, a full chunk per whole part,
     then the remainder's base64 and the tail."""
     full, rest = divmod(wav_len, part_pcm)
-    return [len(HEAD)] + [part_chars] * full + [(rest + 2) // 3 * 4 + len(TAIL)]
+    return [len(HEAD) if head_len is None else head_len] + \
+        [part_chars] * full + [(rest + 2) // 3 * 4 + len(TAIL)]
 
 
 def compile_c(out, sources):
@@ -78,14 +82,16 @@ def compile_c(out, sources):
 class NoteRequestAssertions:
     """Checks a captured request against a body built from CPython's base64."""
 
+    head = HEAD   # the session under test may override (the link session: HEAD_TEXT)
+
     def assert_request(self, run, pcm, part_pcm, part_chars):
         wav = riff_header(16000) + pcm
-        self.assertEqual(run['body'], HEAD + base64.b64encode(wav) + TAIL)
-        self.assertEqual(run['parts'], expected_parts(len(wav), part_pcm, part_chars))
+        self.assertEqual(run['body'], self.head + base64.b64encode(wav) + TAIL)
+        self.assertEqual(run['parts'], expected_parts(len(wav), part_pcm, part_chars, len(self.head)))
         self.assertEqual(run['ends'], [False] * (len(run['parts']) - 1) + [True])
         if run['body_sent'] is not None:
             self.assertEqual(run['body_sent'], len(run['body']))
-        at = len(HEAD)
+        at = len(self.head)
         for size in run['parts'][1:-1]:
             chunk = run['body'][at:at + size]
             self.assertEqual(len(chunk), part_chars)
@@ -198,7 +204,7 @@ class VoiceNoteHelpers(unittest.TestCase):
         self.assertEqual(body, HEAD + base64.b64encode(riff_header(16000) + pcm) + TAIL)
         request = json.loads(body)
         wav = base64.b64decode(request['items'][0].pop('data_base64'), validate=True)
-        self.assertEqual(request, {'message': '', 'output_modality': 'text', 'items': [
+        self.assertEqual(request, {'message': '', 'output_modality': 'voice', 'items': [
             {'type': 'file', 'mime_type': 'audio/wav', 'filename': 'voice_note.wav'}]})
         self.assertEqual(wav, riff_header(16000) + pcm)
         with wave.open(io.BytesIO(wav)) as w:

@@ -109,7 +109,7 @@ static int body(const uint8_t *pcm, size_t n)
     muse_hatch_wav_header(wav, 16000);
     memcpy(wav + MUSE_HATCH_WAV_HEADER, pcm, n);
     size_t b64_len = muse_hatch_base64(wav, wav_len, b64);
-    fputs(MUSE_HATCH_NOTE_HEAD, stdout);
+    fputs(MUSE_HATCH_NOTE_HEAD_VOICE, stdout);
     fwrite(b64, 1, b64_len, stdout);
     fputs(MUSE_HATCH_NOTE_TAIL, stdout);
     free(wav);

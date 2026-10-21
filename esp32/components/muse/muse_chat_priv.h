@@ -71,6 +71,14 @@ static inline void muse_chat_reject(muse_chat_rejected_t *rejected, const char *
 
 /* A voice note is a POST /chat/stream body: NOTE_HEAD, a base64 WAV, NOTE_TAIL. */
 #define MUSE_HATCH_NOTE_HEAD \
+    "{\"message\":\"\",\"output_modality\":\"text\",\"items\":[{\"type\":\"file\"," \
+    "\"mime_type\":\"audio/wav\",\"filename\":\"voice_note.wav\",\"data_base64\":\""
+/*
+ * The chat session sends this head instead: a voice-modality reply is what
+ * the VM serves speech for on the TTS stream (see start_tts). The link
+ * session, which has no speech playback, keeps the text head above.
+ */
+#define MUSE_HATCH_NOTE_HEAD_VOICE \
     "{\"message\":\"\",\"output_modality\":\"voice\",\"items\":[{\"type\":\"file\"," \
     "\"mime_type\":\"audio/wav\",\"filename\":\"voice_note.wav\",\"data_base64\":\""
 #define MUSE_HATCH_NOTE_TAIL "\"}]}"
