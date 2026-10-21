@@ -1515,6 +1515,18 @@ static char *build_register_json(void) {
                     audio_required, nullptr);
         cJSON_AddNumberToObject(
             cJSON_GetObjectItem(commands, "audio.play_file"), "timeout_ms", 60000);
+        cJSON *mood_required = cJSON_CreateObject();
+        cJSON_AddItemToObject(mood_required, "mood",
+                              string_param("The mood to show: idle, listening, "
+                                           "thinking, speaking or error."));
+        add_command(commands, "display.set_mood",
+                    "Set the standby mascot's mood: the face and glow it "
+                    "shows while it waits, so the user can see what Muse "
+                    "is doing (thinking while Muse works, say). A voice "
+                    "session on the device overrides it, and a non-idle "
+                    "mood lapses back to idle after 120 s unless set "
+                    "again. Returns the mood set.",
+                    mood_required, nullptr);
     }
 #endif
 

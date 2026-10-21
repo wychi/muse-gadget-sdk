@@ -247,6 +247,7 @@ struct turn_t {
     uint8_t *mp3;            /* MP3_BUF */
     size_t mp3_len;
     bool mp3_ended;
+    bool tts_legacy;         /* the current speech fetch is on the legacy path */
     mp3dec_t dec;
     resampler_t down;
     int kbps;
@@ -1221,7 +1222,7 @@ static void post_chat(const char *text)
     }
     ESP_LOGI(TAG, "heard: \"%s\"", text);
     emit(MUSE_HATCH_EV_HEARD, text);
-    send_chat(text, "text");
+    send_chat(text, "voice");
 }
 
 /* A typed turn: the text goes straight to the chat. */
@@ -1508,6 +1509,45 @@ static void on_chat_ack(stream_t *s)
 
 /* ---- Turn: speech ---- */
 
+/*
+ * Opens the speech stream for message i: the VM's TTS for that finished
+ * reply, the endpoint the host client uses (stream_tts in link_client.py).
+ * The reply has to be a voice-modality one for the VM to serve it, which is
+ * what the note head and post_chat now ask for. With legacy set, the
+ * pre-/api path is tried instead, as the host client falls back on a 404.
+ * Received chunks land in tts_data() via stream_data(). False when the
+ * stream couldn't be opened at all.
+ */
+static bool open_tts_stream(int i, bool legacy)
+{
+    const msg_t &m = s_turn.msgs[i];
+    /* Percent-escape the id: RFC 3986 unreserved plus the host client's
+     * extra safe set ("-_.!~*'()" on top of the alphanumerics quote() keeps). */
+    char esc[sizeof(m.id) * 3];
+    size_t o = 0;
+    for (const char *p = m.id; *p && o + 4 < sizeof(esc); p++) {
+        unsigned char c = (unsigned char)*p;
+        if (isalnum(c) || strchr("-_.!~*'()", c)) {
+            esc[o++] = (char)c;
+        } else {
+            o += snprintf(esc + o, sizeof(esc) - o, "%%%02X", c);
+        }
+    }
+    esc[o] = '\0';
+    char path[352];
+    snprintf(path, sizeof(path), "%s?message_id=%s",
+             legacy ? "/voice/tts-stream" : "/api/voice/tts-stream", esc);
+    int64_t id = open_stream(K_TTS, "GET", path, nullptr, "audio/mpeg", nullptr, true);
+    if (!id) {
+        return false;
+    }
+    stream_t *s = find_stream(id);
+    if (s) {
+        s->msg = i;
+    }
+    return true;
+}
+
 static void start_tts(void)
 {
     if (s_turn.tts_msg >= 0) {
@@ -1518,28 +1558,35 @@ static void start_tts(void)
         if (m.tts != TTS_QUEUED) {
             continue;
         }
-        /*
-         * Replies are text, shown at reading pace: silence in place of speech
-         * paces the captions and ends the turn. To speak them instead, send
-         * the message's text (s_turn.texts + i * TEXT_MAX, if texts was
-         * allocated; up to TEXT_MAX - 1 bytes) to a TTS API of your choice and
-         * play the MP3 it returns. In place of the silence below: keep
-         * m.tts = TTS_ACTIVE and s_turn.tts_msg = i, set s_turn.silent = false,
-         * m.pcm_start = s_turn.pcm_out, m.pcm_frames = 0, s_turn.mp3_len = 0,
-         * s_turn.mp3_ended = false, s_turn.kbps = 0, s_turn.down_rate = 0 and
-         * mp3dec_init(&s_turn.dec). Then, on this task, pass the MP3 to
-         * tts_data() as it arrives (it buffers up to MP3_BUF and drops the
-         * rest, so hold off while it's full) and set s_turn.mp3_ended at the
-         * end. decode() plays it at the speaker's volume, captions following,
-         * and finishes the message once it's drained.
-         */
         m.pcm_start = s_turn.pcm_out;
-        m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
         m.tts = TTS_ACTIVE;
         s_turn.tts_msg = i;
+        show_reply_start(m);
+        if (muse_settings_speaker_on() && open_tts_stream(i, false)) {
+            /*
+             * Speak it: the MP3 arrives on this task into tts_data() and
+             * decode() plays it from the first frames, captions following.
+             * tts_end() deals with the stream ending, cleanly or not.
+             */
+            m.pcm_frames = 0;
+            s_turn.silent = false;
+            s_turn.mp3_len = 0;
+            s_turn.mp3_ended = false;
+            s_turn.kbps = 0;
+            s_turn.down_rate = 0;
+            s_turn.tts_legacy = false;
+            mp3dec_init(&s_turn.dec);
+            ESP_LOGI(TAG, "fetching speech for message %s", m.id);
+            return;
+        }
+        /*
+         * Speaker off, or the stream wouldn't open: show the message at
+         * reading pace instead — silence in place of speech paces the
+         * captions and ends the turn, as before.
+         */
+        m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
         s_turn.silent = true;
         ESP_LOGI(TAG, "showing message %s (%u chars)", m.id, (unsigned)m.len);
-        show_reply_start(m);
         return;
     }
 }
@@ -1558,15 +1605,34 @@ static void tts_data(const uint8_t *data, size_t len)
 static void tts_end(stream_t *s, bool ok)
 {
     int i = s->msg;
+    int status = s->status;
     close_stream(s);
     if (i < 0 || i != s_turn.tts_msg) {
         return;
     }
     if (ok) {
         s_turn.mp3_ended = true;   /* decode() drains the rest, then finishes */
+        return;
+    }
+    msg_t &m = s_turn.msgs[i];
+    /* The status tells "the VM doesn't serve speech" (404) from a stream
+     * that died under us (a reset, status 0 or 200). Either way the turn
+     * carries on: speech is an addition to the captions, never a gate. */
+    ESP_LOGW(TAG, "speech for message %s failed (HTTP %d)", m.id, status);
+    bool heard = s_turn.mp3_len > 0 || s_turn.pcm_out > m.pcm_start;
+    if (!heard && status == 404 && !s_turn.tts_legacy) {
+        /* The host client falls back to the legacy path on a 404; so do we. */
+        s_turn.tts_legacy = true;
+        if (open_tts_stream(i, true)) {
+            return;
+        }
+    }
+    if (heard) {
+        s_turn.mp3_ended = true;   /* play what arrived, then finish */
     } else {
-        s_turn.msgs[i].tts = TTS_FINISHED;
-        s_turn.tts_msg = -1;
+        /* Nothing to play: show the message at reading pace instead. */
+        m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
+        s_turn.silent = true;
     }
 }
 

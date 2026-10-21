@@ -84,6 +84,7 @@
 #include "muse_glue.h"
 #include "muse_input.h"
 #include "muse_chat.h"
+#include "muse_state.h"
 #include "muse_voice.h"
 // Muse joins Wi-Fi from its own settings, before or without pairing.
 #define WIFI_WITHOUT_PAIRING 1
@@ -1932,6 +1933,80 @@ static cJSON *audio_play_file_command(
     cJSON_AddBoolToObject(async, "_async", true);
     return async;
 }
+
+// ---- Remote mascot mood ------------------------------------------------------
+
+/*
+ * display.set_mood: the backend shows what it is doing on the standby
+ * mascot (thinking while it works, say). A mood set this way is a hint
+ * layer under the device itself: a voice session drives the same mode and
+ * wins — its next transition simply overwrites the remote mood — and a
+ * non-idle remote mood lapses back to idle after 120 s unless set again,
+ * so the mascot can't be left "thinking" forever. The lapse only reverts
+ * when the mode showing is still exactly the one the backend set.
+ */
+#define MOOD_LAPSE_US (120 * 1000000LL)
+static muse_mode_t s_remote_mood = MUSE_MODE_COUNT;
+static esp_timer_handle_t s_mood_timer;
+
+static void mood_lapse_cb(void *arg)
+{
+    (void)arg;
+    if (s_remote_mood != MUSE_MODE_COUNT &&
+        muse_state_mode(NULL) == s_remote_mood) {
+        muse_state_set_mode(MUSE_MODE_IDLE);
+    }
+    s_remote_mood = MUSE_MODE_COUNT;
+}
+
+static cJSON *set_mood_command(cJSON *params)
+{
+    cJSON *mood = cJSON_GetObjectItem(params, "mood");
+    if (!cJSON_IsString(mood) || !mood->valuestring || !mood->valuestring[0]) {
+        return command_error("missing_param", "mood is required");
+    }
+    static const struct {
+        const char *name;
+        muse_mode_t mode;
+    } kMoods[] = {
+        { "idle", MUSE_MODE_IDLE },         { "listening", MUSE_MODE_LISTENING },
+        { "thinking", MUSE_MODE_THINKING }, { "speaking", MUSE_MODE_SPEAKING },
+        { "error", MUSE_MODE_ERROR },
+    };
+    muse_mode_t mode = MUSE_MODE_COUNT;
+    for (size_t i = 0; i < sizeof(kMoods) / sizeof(kMoods[0]); i++) {
+        if (strcmp(mood->valuestring, kMoods[i].name) == 0) {
+            mode = kMoods[i].mode;
+            break;
+        }
+    }
+    if (mode == MUSE_MODE_COUNT) {
+        return command_error("invalid_params",
+                             "mood must be one of idle, listening, thinking, speaking, error");
+    }
+    if (!s_mood_timer) {
+        const esp_timer_create_args_t args = { .callback = mood_lapse_cb,
+                                               .name = "mood_lapse" };
+        if (esp_timer_create(&args, &s_mood_timer) != ESP_OK) {
+            return command_error("internal", "failed to start the mood timer");
+        }
+    }
+    esp_timer_stop(s_mood_timer);
+    s_remote_mood = MUSE_MODE_COUNT;
+    muse_state_set_mode(mode);
+    if (mode != MUSE_MODE_IDLE) {
+        s_remote_mood = mode;
+        if (esp_timer_start_once(s_mood_timer, MOOD_LAPSE_US) != ESP_OK) {
+            s_remote_mood = MUSE_MODE_COUNT;
+            return command_error("internal", "failed to start the mood timer");
+        }
+    }
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON *payload = cJSON_AddObjectToObject(result, "payload");
+    cJSON_AddStringToObject(payload, "mood", mood->valuestring);
+    return result;
+}
 #endif
 
 static cJSON *on_ws_command(
@@ -1987,6 +2062,9 @@ static cJSON *on_ws_command(
 #if CONFIG_MUSE_ENABLED && CONFIG_MUSE_HATCH
     if (strcmp(command, "audio.play_file") == 0) {
         return audio_play_file_command(params, request_id, session_generation);
+    }
+    if (strcmp(command, "display.set_mood") == 0) {
+        return set_mood_command(params);
     }
 #endif
 #if CONFIG_MUSE_WATCHER_CAMERA
