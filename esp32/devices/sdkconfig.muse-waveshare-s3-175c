@@ -65,3 +65,7 @@ CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
 # actually slept, and how long each power lock kept the chip awake.
 CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y
 CONFIG_PM_PROFILING=y
+
+# Captions: fall back to the compiled-in GNU Unifont CJK font for Chinese and
+# Japanese characters the ASCII caption font lacks (~850 KB of flash, no RAM).
+CONFIG_MUSE_CJK_FONT=y
