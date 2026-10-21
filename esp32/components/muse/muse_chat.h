@@ -114,6 +114,13 @@ size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms);
 size_t muse_hatch_mp3_selftest(int16_t **pcm);
 
 /*
+ * Decodes an MP3 in memory to 16 kHz mono, the way a reply is decoded (see
+ * mp3_decode in muse_chat_session.cpp); caller frees *pcm. Returns frames,
+ * or 0 when the MP3 can't be decoded (the no-PSRAM session returns 0).
+ */
+size_t muse_hatch_mp3_decode(const uint8_t *mp3, size_t len, int16_t **pcm);
+
+/*
  * As muse_hatch_turn_audio, for a note recorded before the turn began: takes
  * what fits of it, waiting up to wait_ms for room if not all of it does, and
  * returns the frames taken (CONFIG_MUSE_HATCH only).

@@ -58,6 +58,7 @@
 #include "vm_connect.h"
 #include "noise_control.h"
 #include "image_fetch.h"
+#include "audio_fetch.h"
 #include "noise_tunnel.h"
 #include "led_status.h"
 #include "button.h"
@@ -82,6 +83,8 @@
 #if CONFIG_MUSE_ENABLED
 #include "muse_glue.h"
 #include "muse_input.h"
+#include "muse_chat.h"
+#include "muse_voice.h"
 // Muse joins Wi-Fi from its own settings, before or without pairing.
 #define WIFI_WITHOUT_PAIRING 1
 #else
@@ -1860,6 +1863,77 @@ static cJSON *bug_report_command(
 
 #endif  // CONFIG_HOMEHUB_BLE_COMMANDS
 
+#if CONFIG_MUSE_ENABLED && CONFIG_MUSE_HATCH
+// ---- Pushed audio ------------------------------------------------------------
+
+typedef struct {
+    noise_ctrl_session_generation_t session_generation;
+    char request_id[64];
+    int64_t start_us;
+} audio_play_ctx_t;
+
+static void audio_play_send(audio_play_ctx_t *ctx, cJSON *result) {
+    noise_ctrl_send_command_result(ctx->session_generation, ctx->request_id, result);
+    free(ctx);
+}
+
+static void audio_play_fetched(const audio_fetch_result_t *r, uint8_t *mp3,
+                               size_t mp3_len, void *user) {
+    audio_play_ctx_t *ctx = (audio_play_ctx_t *)user;
+    if (!r->ok) {
+        audio_play_send(ctx, command_error(r->code, r->message));
+        return;
+    }
+    int16_t *pcm = NULL;
+    size_t frames = muse_hatch_mp3_decode(mp3, mp3_len, &pcm);
+    free(mp3);
+    if (!frames || !pcm) {
+        free(pcm);
+        audio_play_send(ctx, command_error("decode_failed", "not a playable MP3"));
+        return;
+    }
+    if (!muse_voice_request_mp3_play(pcm, frames)) {
+        free(pcm);
+        audio_play_send(ctx, command_error("busy", "another clip is already waiting to play"));
+        return;
+    }
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON *payload = cJSON_AddObjectToObject(result, "payload");
+    cJSON_AddNumberToObject(payload, "bytes", (double)r->bytes);
+    cJSON_AddNumberToObject(payload, "duration_ms", (double)(frames * 1000 / 16000));
+    cJSON_AddNumberToObject(payload, "ms",
+                            (double)((esp_timer_get_time() - ctx->start_us) / 1000));
+    audio_play_send(ctx, result);
+}
+
+static cJSON *audio_play_file_command(
+    cJSON *params, const char *request_id,
+    noise_ctrl_session_generation_t session_generation) {
+    cJSON *target = cJSON_GetObjectItem(params, "path");
+    if (!cJSON_IsString(target) || !target->valuestring || !target->valuestring[0]) {
+        return command_error("missing_param", "path is required");
+    }
+    if (strlen(target->valuestring) > 512) {
+        return command_error("invalid_params", "path is too long");
+    }
+    audio_play_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) return command_error("out_of_memory", "failed to allocate");
+    ctx->session_generation = session_generation;
+    strncpy(ctx->request_id, request_id, sizeof(ctx->request_id) - 1);
+    ctx->start_us = esp_timer_get_time();
+    const char *code, *message;
+    if (!audio_fetch_start_vm(target->valuestring, audio_play_fetched, ctx,
+                              &code, &message)) {
+        free(ctx);
+        return command_error(code, message);
+    }
+    cJSON *async = cJSON_CreateObject();
+    cJSON_AddBoolToObject(async, "_async", true);
+    return async;
+}
+#endif
+
 static cJSON *on_ws_command(
     const char *command, cJSON *params, const char *request_id,
     noise_ctrl_session_generation_t session_generation) {
@@ -1908,6 +1982,11 @@ static cJSON *on_ws_command(
         cJSON *result = cJSON_CreateObject();
         cJSON_AddBoolToObject(result, "ok", true);
         return result;
+    }
+#endif
+#if CONFIG_MUSE_ENABLED && CONFIG_MUSE_HATCH
+    if (strcmp(command, "audio.play_file") == 0) {
+        return audio_play_file_command(params, request_id, session_generation);
     }
 #endif
 #if CONFIG_MUSE_WATCHER_CAMERA

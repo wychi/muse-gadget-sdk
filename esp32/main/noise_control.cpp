@@ -1497,6 +1497,27 @@ static char *build_register_json(void) {
     }
 #endif
 
+#if CONFIG_MUSE_ENABLED && CONFIG_MUSE_HATCH
+    {
+        cJSON *audio_required = cJSON_CreateObject();
+        cJSON_AddItemToObject(audio_required, "path",
+                              string_param("Path of the MP3 file on this VM, relative, "
+                                           "as the VM's file API takes it, e.g. "
+                                           "workspace/reply.mp3."));
+        add_command(commands, "audio.play_file",
+                    "Play an MP3 file from this VM on the speaker. The audio "
+                    "twin of display.draw_file: the device reads the file "
+                    "over its connection to the VM, so the file need not be "
+                    "on the internet. Files up to 512 KB. Replies once the "
+                    "file is fetched and decoded and playback has been "
+                    "handed to the speaker; it then plays, after any "
+                    "push-to-talk reply already speaking.",
+                    audio_required, nullptr);
+        cJSON_AddNumberToObject(
+            cJSON_GetObjectItem(commands, "audio.play_file"), "timeout_ms", 60000);
+    }
+#endif
+
 #if CONFIG_HOMEHUB_VOICE
     cJSON *volume_optional = cJSON_CreateObject();
     cJSON *volume_param = cJSON_CreateObject();

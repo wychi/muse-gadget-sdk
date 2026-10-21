@@ -2199,12 +2199,16 @@ extern "C" size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms)
     return xStreamBufferReceive(s_out, pcm, frames * sizeof(int16_t), pdMS_TO_TICKS(wait_ms)) / sizeof(int16_t);
 }
 
-/* Bench test: decodes the embedded test_reply.mp3 exactly as a reply is decoded. */
-static size_t mp3_selftest(int16_t **pcm_out)
+/*
+ * Decodes an MP3 in memory to 16 kHz mono, exactly as a reply is decoded:
+ * stereo is mixed down and the stream resampled to MIC_RATE. The output
+ * buffer grows as needed, up to MP3_DECODE_MAX_S of audio; past that the
+ * clip is truncated.
+ */
+#define MP3_DECODE_MAX_S 120
+
+static size_t mp3_decode(const uint8_t *mp3, size_t len, int16_t **pcm_out)
 {
-    extern const uint8_t mp3_start[] asm("_binary_test_reply_mp3_start");
-    extern const uint8_t mp3_end[] asm("_binary_test_reply_mp3_end");
-    size_t len = mp3_end - mp3_start;
     mp3dec_t *dec = (mp3dec_t *)psram_alloc(sizeof(mp3dec_t));
     int16_t *pcm = (int16_t *)psram_alloc(MINIMP3_MAX_SAMPLES_PER_FRAME * sizeof(int16_t));
     size_t cap = MIC_RATE * 10;
@@ -2222,7 +2226,7 @@ static size_t mp3_selftest(int16_t **pcm_out)
     int64_t t0 = now_us();
     while (off < len) {
         mp3dec_frame_info_t info;
-        int samples = mp3dec_decode_frame(dec, mp3_start + off, len - off, pcm, &info);
+        int samples = mp3dec_decode_frame(dec, mp3 + off, len - off, pcm, &info);
         if (!info.frame_bytes) {
             break;
         }
@@ -2241,11 +2245,24 @@ static size_t mp3_selftest(int16_t **pcm_out)
             resampler_init(&rs, info.hz, MIC_RATE);
         }
         if (n + (size_t)samples * MIC_RATE / rate + 2 > cap) {
-            break;
+            if (cap >= (size_t)MIC_RATE * MP3_DECODE_MAX_S) {
+                break;   /* past the cap: truncate */
+            }
+            size_t want = cap * 2;
+            if (want > (size_t)MIC_RATE * MP3_DECODE_MAX_S) {
+                want = (size_t)MIC_RATE * MP3_DECODE_MAX_S;
+            }
+            int16_t *grown = (int16_t *)heap_caps_realloc(
+                out, want * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!grown) {
+                break;
+            }
+            out = grown;
+            cap = want;
         }
         n += resample(&rs, pcm, samples, out + n);
     }
-    ESP_LOGI(TAG, "mp3 selftest: %u bytes, %d frames at %d Hz -> %u samples (%.2f s) in %lld ms",
+    ESP_LOGI(TAG, "mp3 decode: %u bytes, %d frames at %d Hz -> %u samples (%.2f s) in %lld ms",
              (unsigned)len, frames, rate, (unsigned)n, n / (double)MIC_RATE, (now_us() - t0) / 1000);
     free(dec);
     free(pcm);
@@ -2253,29 +2270,44 @@ static size_t mp3_selftest(int16_t **pcm_out)
     return n;
 }
 
-struct selftest_t {
+struct decode_req_t {
     TaskHandle_t caller;
+    const uint8_t *mp3;
+    size_t len;
     int16_t *pcm;
     size_t n;
 };
 
 /* minimp3 wants ~16 KB of stack, more than the voice task has. */
-extern "C" size_t muse_hatch_mp3_selftest(int16_t **pcm_out)
+static size_t mp3_decode_on_task(const uint8_t *mp3, size_t len, int16_t **pcm_out)
 {
-    selftest_t st = { xTaskGetCurrentTaskHandle(), nullptr, 0 };
+    decode_req_t req = { xTaskGetCurrentTaskHandle(), mp3, len, nullptr, 0 };
     auto body = [](void *arg) {
-        auto *st = (selftest_t *)arg;
-        st->n = mp3_selftest(&st->pcm);
-        xTaskNotifyGive(st->caller);
+        auto *req = (decode_req_t *)arg;
+        req->n = mp3_decode(req->mp3, req->len, &req->pcm);
+        xTaskNotifyGive(req->caller);
         vTaskSuspend(NULL);   /* the caller deletes it, which frees the PSRAM stack */
     };
     TaskHandle_t task;
-    if (xTaskCreatePinnedToCoreWithCaps(body, "mp3_selftest", 32 * 1024, &st, 5, &task, 0,
+    if (xTaskCreatePinnedToCoreWithCaps(body, "mp3_decode", 32 * 1024, &req, 5, &task, 0,
                                         MALLOC_CAP_SPIRAM) != pdPASS) {
         return 0;
     }
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     vTaskDeleteWithCaps(task);
-    *pcm_out = st.pcm;
-    return st.n;
+    *pcm_out = req.pcm;
+    return req.n;
+}
+
+/* Bench test: decodes the embedded test_reply.mp3 exactly as a reply is decoded. */
+extern "C" size_t muse_hatch_mp3_selftest(int16_t **pcm_out)
+{
+    extern const uint8_t mp3_start[] asm("_binary_test_reply_mp3_start");
+    extern const uint8_t mp3_end[] asm("_binary_test_reply_mp3_end");
+    return mp3_decode_on_task(mp3_start, (size_t)(mp3_end - mp3_start), pcm_out);
+}
+
+extern "C" size_t muse_hatch_mp3_decode(const uint8_t *mp3, size_t len, int16_t **pcm_out)
+{
+    return mp3_decode_on_task(mp3, len, pcm_out);
 }

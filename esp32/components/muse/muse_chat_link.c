@@ -927,3 +927,11 @@ size_t muse_hatch_mp3_selftest(int16_t **pcm)
     *pcm = NULL;
     return 0;
 }
+
+size_t muse_hatch_mp3_decode(const uint8_t *mp3, size_t len, int16_t **pcm)
+{
+    (void)mp3;   /* no MP3 decoding without PSRAM: replies are text only */
+    (void)len;
+    *pcm = NULL;
+    return 0;
+}

@@ -44,6 +44,15 @@ void muse_voice_request_loopback(void);
 /* Bench test: decodes and plays a built-in MP3 reply. */
 void muse_voice_request_mp3test(void);
 
+/*
+ * Plays decoded 16 kHz mono PCM pushed by Muse (audio.play_file), once the
+ * voice task is idle: a clip requested during a push-to-talk turn waits and
+ * plays after the turn's reply. Takes ownership of pcm on success (the
+ * voice task frees it after playing); on false — a clip is already
+ * waiting — the caller keeps it and frees it itself.
+ */
+bool muse_voice_request_mp3_play(int16_t *pcm, size_t frames);
+
 /* Asleep with nothing to play: codecs off, Wi-Fi dozing. */
 bool muse_voice_resting(void);
 

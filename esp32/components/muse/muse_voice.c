@@ -75,6 +75,14 @@ static volatile bool s_loopback;
 static volatile bool s_mp3test;
 
 /*
+ * One pushed clip waiting to play (audio.play_file): decoded 16 kHz mono
+ * PCM the voice task owns once muse_voice_request_mp3_play takes it. The
+ * pointer is the flag: it is set last, cleared before playback starts.
+ */
+static int16_t *volatile s_clip_pcm;
+static size_t s_clip_frames;
+
+/*
  * Pre-roll: while idle the mic keeps running into this ring, so a recording
  * can start a little before the press. People start talking as they press,
  * and the power key reports the press late.
@@ -796,7 +804,7 @@ static void voice_task(void *arg)
             muse_input_event_t ev;
             bool asleep = muse_state_asleep();
             bool battery = muse_state_on_battery();
-            bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback;
+            bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback && !s_clip_pcm;
 #if HOLD_NOTES
             /* A press goes first: send_held() leaves it queued and returns
              * without backing off, so retrying before it's read would spin. */
@@ -832,6 +840,17 @@ static void voice_task(void *arg)
                 s_mp3test = false;
                 int16_t *pcm = NULL;
                 size_t n = muse_hatch_mp3_selftest(&pcm);
+                for (size_t i = 0; i < n; i += MUSE_AUDIO_CHUNK) {
+                    muse_audio_write(pcm + i, n - i < MUSE_AUDIO_CHUNK ? n - i : MUSE_AUDIO_CHUNK);
+                }
+                free(pcm);
+                pre_reset();
+            }
+            if (s_clip_pcm) {
+                int16_t *pcm = s_clip_pcm;
+                size_t n = s_clip_frames;
+                s_clip_pcm = NULL;
+                s_clip_frames = 0;
                 for (size_t i = 0; i < n; i += MUSE_AUDIO_CHUNK) {
                     muse_audio_write(pcm + i, n - i < MUSE_AUDIO_CHUNK ? n - i : MUSE_AUDIO_CHUNK);
                 }
@@ -936,6 +955,17 @@ void muse_voice_request_mp3test(void)
 {
     s_mp3test = true;
     muse_state_nudge();
+}
+
+bool muse_voice_request_mp3_play(int16_t *pcm, size_t frames)
+{
+    if (!pcm || !frames || s_clip_pcm) {
+        return false;
+    }
+    s_clip_frames = frames;
+    s_clip_pcm = pcm;
+    muse_state_nudge();
+    return true;
 }
 
 bool muse_voice_resting(void)
