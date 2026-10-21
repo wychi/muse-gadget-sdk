@@ -28,6 +28,9 @@
 
 #include "muse_chat.h"
 #include "muse_link.h"
+#if CONFIG_MUSE_WALKIE_PROBE
+#include "walkie_probe.h"
+#endif
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_voice.h"
@@ -250,6 +253,13 @@ static const struct ble_gatt_svc_def SERVICES[] = {
             { 0 },
         },
     },
+#if CONFIG_MUSE_WALKIE_PROBE
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &muse_walkie_svc_uuid.u,
+        .characteristics = muse_walkie_chrs,
+    },
+#endif
     { 0 },
 };
 
@@ -284,6 +294,9 @@ void muse_ble_set_name(const char *name)
  */
 int muse_ble_gap_event(struct ble_gap_event *ev)
 {
+#if CONFIG_MUSE_WALKIE_PROBE
+    muse_walkie_gap_event(ev);
+#endif
     switch (ev->type) {
     case BLE_GAP_EVENT_CONNECT:
         if (ev->connect.status == 0) {

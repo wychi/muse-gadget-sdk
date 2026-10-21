@@ -215,6 +215,22 @@ menu "Muse"
             Without it those characters show as boxes. Hangul isn't
             included.
 
+    config MUSE_WALKIE_PROBE
+        bool "Walkie-talkie BLE link probe (bench only)"
+        depends on MUSE_ENABLED
+        default n
+        help
+            Bench-only measurement build for the gadget-to-gadget
+            walkie-talkie idea: two gadgets running this build find each
+            other over BLE and stream sequenced pattern data one way, so
+            the direct link's throughput, packet loss, round-trip time
+            and stability can be measured from the log and the caption
+            line. No audio, nothing through the Muse backend, and the
+            normal Muse session keeps running. Needs the BLE central,
+            observer and GATT client roles and at least two connections:
+            build with devices/sdkconfig.walkie appended to the board's
+            overlays. Never enable in a release profile.
+
     config MUSE_JC3248W535_MIC_GPIO
         int "JC3248W535: GPIO for an external I2S mic's data (SD) line"
         depends on MUSE_BOARD_GUITION_JC3248W535

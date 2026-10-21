@@ -45,6 +45,9 @@
 #include "muse_mem.h"
 #include "muse_settings.h"
 #include "muse_state.h"
+#if CONFIG_MUSE_WALKIE_PROBE
+#include "walkie_probe.h"
+#endif
 
 static const char *TAG = "link.muse";
 
@@ -648,6 +651,9 @@ void muse_glue_start(void) {
         .on_gap_event = muse_ble_gap_event,
     };
     ble_server_set_companion(&companion);
+#if CONFIG_MUSE_WALKIE_PROBE
+    muse_walkie_probe_start();
+#endif
     // Pinned to the UI core, so the display's SPI interrupt, set up in it,
     // lands beside the task that sends to the display (muse_lcd_bands.h).
     if (xTaskCreatePinnedToCore(boot_task, "muse_boot", 8192, NULL, 5, NULL, MUSE_UI_CORE) != pdPASS

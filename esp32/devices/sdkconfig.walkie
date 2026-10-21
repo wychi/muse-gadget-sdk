@@ -1,0 +1,14 @@
+# Walkie-talkie BLE link probe overlay (bench only). Append AFTER the
+# board's own overlays in SDKCONFIG_DEFAULTS, in a throwaway build dir:
+#   idf.py -B build-walkie-s3-175c -DIDF_TARGET=esp32s3 \
+#     -DSDKCONFIG=build-walkie-s3-175c/sdkconfig \
+#     -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-175c;devices/sdkconfig.walkie" build
+# Turns on the probe (components/muse/walkie_probe.c) and the NimBLE
+# roles it needs. MAX_CONNECTIONS=2: the peer link plus the phone-setup
+# spare. Later defaults win over devices/sdkconfig.muse, which turns the
+# central/observer roles off for production.
+CONFIG_MUSE_WALKIE_PROBE=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_GATT_CLIENT=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2
