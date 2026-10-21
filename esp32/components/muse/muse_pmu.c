@@ -26,6 +26,7 @@ static const char *TAG = "muse_pmu";
 #define REG_STATUS1 0x00        /* bit5 VBUS good, bit3 battery present */
 #define REG_STATUS2 0x01        /* bits[6:5] 01 = charging */
 #define REG_COMMON_CFG 0x10     /* bit0 = soft power-off */
+#define REG_PWROFF_EN 0x22      /* bit1 = PWRON OFFLEVEL (long-press) power-off source enable */
 #define REG_IRQ_LEVEL 0x27      /* bits[3:2] power-key hold-to-off time */
 #define REG_ADC_ENABLE 0x30     /* bit0 = battery voltage */
 #define REG_VBAT_H 0x34         /* bits[4:0]; 1 mV per count with REG_VBAT_L */
@@ -46,9 +47,13 @@ static const char *TAG = "muse_pmu";
 #define PKEY_SHORT (1u << 3)
 #define PKEY_ALL (PKEY_POS_EDGE | PKEY_NEG_EDGE | PKEY_LONG | PKEY_SHORT)
 
-/* bits[3:2] = 11 -> 10 s: longer than the 8 s talk limit, and a hardware
- * fallback if the firmware is wedged. */
+/* bits[3:2] = 11 -> 10 s, the longest OFFLEVEL the chip offers. The time
+ * alone does nothing: REG_PWROFF_EN bit1 below decides whether reaching it
+ * powers off, and muse_pmu_init() clears that bit. */
 #define PKEY_OFF_10S (3u << 2)
+
+/* REG_PWROFF_EN bit1: PWRON held past OFFLEVEL as a power-off source. */
+#define PWROFF_LONG_PRESS (1u << 1)
 
 static i2c_master_dev_handle_t s_dev;
 
@@ -76,6 +81,17 @@ esp_err_t muse_pmu_init(i2c_master_bus_handle_t bus, bool key_irqs)
     ESP_RETURN_ON_ERROR(rd(REG_IRQ_LEVEL, &v), TAG, "AXP2101 not responding");
     ESP_RETURN_ON_ERROR(wr(REG_IRQ_LEVEL, (v & ~0x0C) | PKEY_OFF_10S), TAG, "set off time");
 
+    /* On the Waveshare 1.75C the PMU power key is the talk button, so the
+     * chip's long-press power-off cuts in mid-recording after OFFLEVEL
+     * (10 s at most) no matter what the firmware wants. Remove the long
+     * press as a power-off source: the key can then be held as long as a
+     * note takes. The trade-off is the hardware anti-wedge fallback -- a
+     * wedged unit now needs its battery unplugged to power-cycle.
+     * Deliberate power-off is unaffected: it goes through REG_COMMON_CFG
+     * (soft off). */
+    ESP_RETURN_ON_ERROR(rd(REG_PWROFF_EN, &v), TAG, "read pwroff enables");
+    ESP_RETURN_ON_ERROR(wr(REG_PWROFF_EN, v & ~PWROFF_LONG_PRESS), TAG, "disable long-press power-off");
+
     if (key_irqs) {
         ESP_RETURN_ON_ERROR(rd(REG_INTEN2, &v), TAG, "read inten2");
         ESP_RETURN_ON_ERROR(wr(REG_INTEN2, v | PKEY_ALL), TAG, "enable key irqs");
@@ -97,7 +113,7 @@ esp_err_t muse_pmu_init(i2c_master_bus_handle_t bus, bool key_irqs)
     ESP_RETURN_ON_ERROR(rd(REG_ADC_ENABLE, &v), TAG, "read adc enable");
     ESP_RETURN_ON_ERROR(wr(REG_ADC_ENABLE, v | 0x01), TAG, "enable battery voltage");
 
-    ESP_LOGI(TAG, "AXP2101 ready (hardware PWR hold-off 10 s)");
+    ESP_LOGI(TAG, "AXP2101 ready (PWR long-press power-off disabled)");
     return ESP_OK;
 }
 
