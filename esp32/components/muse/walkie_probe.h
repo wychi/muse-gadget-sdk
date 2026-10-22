@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <stdbool.h>
+
 #include "host/ble_gatt.h"
 #include "host/ble_uuid.h"
 
@@ -43,6 +45,10 @@ extern const struct ble_gatt_chr_def muse_walkie_chrs[];
  * included); the probe picks out its own connection and subscriptions. */
 void muse_walkie_gap_event(struct ble_gap_event *ev);
 
-/* Creates the probe's tasks. Safe to call before the BLE host is up:
- * the tasks wait for sync. */
-void muse_walkie_probe_start(void);
+/* Creates the probe's tasks. host_synced reports the BLE host's state
+ * from ble_server's own flags (muse_glue passes ble_server_is_synced);
+ * the probe calls no host API until it reports true. That gate is what
+ * makes starting the probe before the host is up — or with it off —
+ * safe: even ble_hs_synced() dereferences host state that does not
+ * exist before nimble_port_init(). */
+void muse_walkie_probe_start(bool (*host_synced)(void));

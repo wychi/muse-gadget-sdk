@@ -652,7 +652,7 @@ void muse_glue_start(void) {
     };
     ble_server_set_companion(&companion);
 #if CONFIG_MUSE_WALKIE_PROBE
-    muse_walkie_probe_start();
+    muse_walkie_probe_start(ble_server_is_synced);
 #endif
     // Pinned to the UI core, so the display's SPI interrupt, set up in it,
     // lands beside the task that sends to the display (muse_lcd_bands.h).

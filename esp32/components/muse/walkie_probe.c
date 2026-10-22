@@ -40,6 +40,18 @@
 
 static const char *TAG = "muse.walkie";
 
+/* Host-state gate, supplied by muse_glue_start (ble_server_is_synced).
+ * ble_hs_synced() loads through ble_hs_state_ctx, which is NULL until
+ * nimble_port_init() runs inside ble_server_start(); with the phone
+ * companion off that may never happen, and the load faults the chip.
+ * ble_server's own flags are plain statics, safe to read at any time,
+ * so every host call below waits for this gate first. */
+static bool (*s_host_synced)(void);
+
+static bool host_ready(void) {
+    return s_host_synced && s_host_synced();
+}
+
 /* ---- Wire format -------------------------------------------------------
  * One DATA characteristic carries everything, first byte is the type:
  *   0x00 data   : [0]=0x00, [1..4]=seq LE32, rest = pattern bytes.
@@ -508,7 +520,7 @@ static void central_task(void *arg) {
     (void)arg;
     uint8_t own_type = 0;
     for (;;) {
-        if (!ble_hs_synced()) {
+        if (!host_ready()) {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
@@ -600,7 +612,7 @@ static void stats_task(void *arg) {
     uint32_t prev_bytes = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(5000));
-        if (!ble_hs_synced()) continue;
+        if (!host_ready()) continue;
         ensure_advertising();
         uint32_t bytes = atomic_load(&s_rx_bytes);
         uint32_t rate = (bytes - prev_bytes) * 8 / 5;   /* bit/s over the window */
@@ -630,7 +642,8 @@ static void stats_task(void *arg) {
     }
 }
 
-void muse_walkie_probe_start(void) {
+void muse_walkie_probe_start(bool (*host_synced)(void)) {
+    s_host_synced = host_synced;
     s_done = xSemaphoreCreateBinary();
     if (!s_done) {
         ESP_LOGE(TAG, "no semaphore");
