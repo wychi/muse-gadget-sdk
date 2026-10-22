@@ -1,1 +1,1 @@
-1.2.5-diary.dde39f3
+1.2.5-diary.319b9c4
