@@ -1,1 +1,1 @@
-1.2.0-walkie.c0d1934
+1.2.4-walkie.b4114ee
