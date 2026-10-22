@@ -202,6 +202,8 @@ static SemaphoreHandle_t s_done;
 static int s_step_status;
 static ble_addr_t s_peer_addr;
 static bool s_peer_found;
+static uint32_t s_uuid_sightings;   /* nameless walkie-UUID ads logged this scan */
+static bool s_adv_skip_logged;
 static uint8_t s_own_addr[6];
 static bool s_own_addr_known;
 
@@ -268,22 +270,52 @@ static int walkie_gap_event(struct ble_gap_event *ev, void *arg) {
     case BLE_GAP_EVENT_DISC: {
         if (s_peer_found) return 0;
         struct ble_hs_adv_fields f;
-        if (ble_hs_adv_parse_fields(&f, ev->disc.data, ev->disc.length_data) != 0
-            || !f.name || !f.name_len) {
+        if (ble_hs_adv_parse_fields(&f, ev->disc.data, ev->disc.length_data) != 0) {
+            return 0;
+        }
+        if (!f.name || !f.name_len) {
+            /* The probe's advertising puts the walkie UUID in the adv
+             * data and the name in the scan response, so the two can
+             * arrive as separate DISC events. Log the nameless walkie
+             * sightings (a few per scan), or discovery debugging over
+             * the boot diary is blind to them. */
+            for (int i = 0; i < f.num_uuids128; i++) {
+                if (ble_uuid_cmp(&f.uuids128[i].u, &muse_walkie_svc_uuid.u) == 0
+                    && s_uuid_sightings < 6) {
+                    s_uuid_sightings++;
+                    ESP_LOGI(TAG, "probe: walkie uuid adv, no name, evtype=%d addr %02x:%02x:%02x:%02x:%02x:%02x",
+                             ev->disc.event_type,
+                             ev->disc.addr.val[5], ev->disc.addr.val[4],
+                             ev->disc.addr.val[3], ev->disc.addr.val[2],
+                             ev->disc.addr.val[1], ev->disc.addr.val[0]);
+                    break;
+                }
+            }
             return 0;
         }
         /* The other gadget: a MuseGadget-* advertiser whose address is
          * higher than ours -- the lower address is always the initiator,
          * so exactly one side ever connects. */
         if (f.name_len < 11 || memcmp(f.name, "MuseGadget-", 11) != 0) return 0;
-        if (!s_own_addr_known || memcmp(ev->disc.addr.val, s_own_addr, 6) == 0) return 0;
-        if (memcmp(ev->disc.addr.val, s_own_addr, 6) < 0) return 0;
+        int cmp = s_own_addr_known
+                      ? memcmp(ev->disc.addr.val, s_own_addr, 6) : 0;
+        ESP_LOGI(TAG, "probe: saw %.*s addr %02x:%02x:%02x:%02x:%02x:%02x evtype=%d own_known=%d cmp=%d",
+                 f.name_len, f.name,
+                 ev->disc.addr.val[5], ev->disc.addr.val[4],
+                 ev->disc.addr.val[3], ev->disc.addr.val[2],
+                 ev->disc.addr.val[1], ev->disc.addr.val[0],
+                 ev->disc.event_type, (int)s_own_addr_known, cmp);
+        if (!s_own_addr_known || cmp == 0) return 0;
+        if (cmp < 0) return 0;
         if (!(ev->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_ADV_IND
               || ev->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_DIR_IND)) {
+            ESP_LOGI(TAG, "probe: peer rejected on evtype=%d",
+                     ev->disc.event_type);
             return 0;
         }
         s_peer_addr = ev->disc.addr;
         s_peer_found = true;
+        ESP_LOGI(TAG, "probe: peer accepted, connecting next");
         ble_gap_disc_cancel();
         return 0;
     }
@@ -410,6 +442,7 @@ static int mtu_cb(uint16_t conn, const struct ble_gatt_error *err, uint16_t mtu,
 
 static bool scan_for_peer(uint8_t own_type) {
     s_peer_found = false;
+    s_uuid_sightings = 0;
     struct ble_gap_disc_params p = {0};
     p.itvl = 96;      /* 60 ms */
     p.window = 48;    /* 30 ms */
@@ -427,6 +460,7 @@ static bool scan_for_peer(uint8_t own_type) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     if (ble_gap_disc_active()) ble_gap_disc_cancel();
+    ESP_LOGI(TAG, "probe: scan done, peer_found=%d", (int)s_peer_found);
     return s_peer_found;
 }
 
@@ -519,10 +553,16 @@ fail:
 static void central_task(void *arg) {
     (void)arg;
     uint8_t own_type = 0;
+    bool was_ready = false;
     for (;;) {
         if (!host_ready()) {
+            was_ready = false;
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
+        }
+        if (!was_ready) {
+            was_ready = true;
+            ESP_LOGI(TAG, "probe: host synced, central active");
         }
         if (!s_own_addr_known) {
             if (ble_hs_id_copy_addr(BLE_ADDR_PUBLIC, s_own_addr, NULL) == 0) {
@@ -581,7 +621,14 @@ static void central_task(void *arg) {
 /* ---- Stats + keeping the source connectable ---------------------------- */
 
 static void ensure_advertising(void) {
-    if (s_srv_conn != BLE_HS_CONN_HANDLE_NONE || ble_gap_adv_active()) return;
+    if (s_srv_conn != BLE_HS_CONN_HANDLE_NONE) return;
+    if (ble_gap_adv_active()) {
+        if (!s_adv_skip_logged) {
+            s_adv_skip_logged = true;
+            ESP_LOGI(TAG, "probe: advertising already active (not the probe's fields)");
+        }
+        return;
+    }
     uint8_t own_type;
     if (ble_hs_id_infer_auto(0, &own_type) != 0) return;
     struct ble_hs_adv_fields fields = {0};
@@ -603,6 +650,7 @@ static void ensure_advertising(void) {
     p.itvl_max = BLE_GAP_ADV_ITVL_MS(100);
     int rc = ble_gap_adv_start(own_type, NULL, BLE_HS_FOREVER, &p, walkie_gap_event, NULL);
     if (rc == 0) {
+        s_adv_skip_logged = false;
         ESP_LOGI(TAG, "source: probe advertising on");
     }
 }
