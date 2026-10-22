@@ -37,6 +37,7 @@ bool ota_is_enabled(void) {
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
@@ -272,9 +273,14 @@ void ota_start(const char *url, bool force, ota_status_cb cb, void *user) {
         }
         return;
     }
-    // 8 KB stack: TLS handshake + flash writes during the OTA download.
-    if (xTaskCreate(ota_task, "ota", 16384, ctx, 5, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "could not start OTA task");
+    // 8 KB stack (Espressif's esp_https_ota example size): TLS handshake +
+    // flash writes during the OTA download. Was 16384 until 1.2.7: the
+    // walkie firmware's runtime floor is ~20 KB free internal RAM, so a
+    // contiguous 16 KB block no longer exists and every OTA was refused.
+    if (xTaskCreate(ota_task, "ota", 8192, ctx, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "could not start OTA task (largest internal block %u, free %u)",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         free(ctx->url);
         free(ctx);
         if (cb) {
