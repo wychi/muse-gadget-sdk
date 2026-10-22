@@ -105,6 +105,19 @@ menu "ESP32 Device SDK"
             profiles enable this explicitly; the Kconfig fallback remains off
             for custom builds that bypass the supported sdkconfig defaults.
 
+    config HOMEHUB_BOOT_DIARY
+        bool "Keep a boot diary in RTC memory"
+        default n
+        help
+            Mirror the firmware log into a small ring buffer in RTC
+            memory from the first line of app_main, and advertise the
+            device.bootlog command to read it back. RTC memory survives
+            software and watchdog resets, so the boot after a panic or
+            a hang can hand over the dead boot's last lines without a
+            serial cable; only a full power loss erases it. Costs about
+            4 KB of RTC slow memory and one bounded copy per log line.
+            Bench and diagnostic profiles enable this explicitly.
+
     config HOMEHUB_SHOW_AGENT_NAME
         bool "Show the agent's name on the display"
         default y if HOMEHUB_DISPLAY

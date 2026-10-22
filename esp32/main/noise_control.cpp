@@ -16,6 +16,7 @@
 
 #include "ble_commands.h"
 #include "noise_control.h"
+#include "boot_diary.h"
 #include "stack_monitor.h"
 #include "noise_upgrade.h"
 #include "noise_tunnel_internal.h"
@@ -1395,6 +1396,27 @@ static char *build_register_json(void) {
                 "voltage, and whether it is charging or on USB power; each is "
                 "null when the device has no battery or can't measure it",
                 nullptr, nullptr);
+#if CONFIG_HOMEHUB_BOOT_DIARY
+    {
+        cJSON *bootlog_optional = cJSON_CreateObject();
+        cJSON *offset_param = cJSON_CreateObject();
+        cJSON_AddStringToObject(offset_param, "type", "number");
+        cJSON_AddStringToObject(offset_param, "description",
+                                "Byte offset to start reading from; 0 (the "
+                                "default) is the oldest byte held. Page with "
+                                "it against the result's `total`.");
+        cJSON_AddItemToObject(bootlog_optional, "offset", offset_param);
+        add_command(commands, "device.bootlog",
+                    "Read the boot diary: the firmware log mirrored into "
+                    "RTC memory, kept across reboots (only a full power "
+                    "loss erases it). Boots are delimited by "
+                    "\"=== boot #N reset=... ver=... ===\" markers, so "
+                    "the previous boot's last lines show where it "
+                    "stopped. Returns up to 2048 bytes from `offset`, "
+                    "plus `total` bytes held and `boots` recorded.",
+                    nullptr, bootlog_optional);
+    }
+#endif
 #if CONFIG_HOMEHUB_TUNNEL
     add_command(commands, "device.discover",
                 "Scan local network for devices (ARP, mDNS, SSDP, SNMP, NetBIOS)",
@@ -1679,6 +1701,33 @@ static void noise_ota_status(const ota_event_t *ev, void *user) {
 
 // ---- Inbound message dispatch -----------------------------------------------
 
+#if CONFIG_HOMEHUB_BOOT_DIARY
+static void send_device_bootlog(
+    noise_ctrl_session_generation_t session_generation,
+    const char *request_id, uint32_t offset) {
+    char *text = static_cast<char *>(malloc(2049));
+    if (!text) return;
+    boot_diary_read(offset, text, 2049);
+
+    cJSON *diary = cJSON_CreateObject();
+    cJSON_AddNumberToObject(diary, "boots", boot_diary_boots());
+    cJSON_AddNumberToObject(diary, "total", boot_diary_total());
+    cJSON_AddNumberToObject(diary, "offset", offset);
+    cJSON_AddStringToObject(diary, "text", text);
+    free(text);
+
+    char *payload = cJSON_PrintUnformatted(diary);
+    cJSON_Delete(diary);
+    if (!payload) return;
+
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON_AddStringToObject(result, "payload_json", payload);
+    free(payload);
+    queue_result(session_generation, request_id, result);
+}
+#endif
+
 static void send_device_health(
     noise_ctrl_session_generation_t session_generation,
     const char *request_id) {
@@ -1813,6 +1862,17 @@ static void handle_invoke_request(
         }
     } else if (strcmp(command, "device.health") == 0) {
         send_device_health(session_generation, request_id);
+#if CONFIG_HOMEHUB_BOOT_DIARY
+    } else if (strcmp(command, "device.bootlog") == 0) {
+        uint32_t offset = 0;
+        cJSON *off = cmd_params
+                         ? cJSON_GetObjectItem(cmd_params, "offset")
+                         : nullptr;
+        if (cJSON_IsNumber(off) && off->valuedouble > 0) {
+            offset = static_cast<uint32_t>(off->valuedouble);
+        }
+        send_device_bootlog(session_generation, request_id, offset);
+#endif
     } else if (s_command_cb) {
         cJSON *result = s_command_cb(command, cmd_params, request_id,
                                      session_generation);

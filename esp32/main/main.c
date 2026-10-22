@@ -20,6 +20,7 @@
 #if CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP
 #include "esp_psram.h"
 #endif
+#include "boot_diary.h"
 #include "diagnostic_log.h"
 #if CONFIG_MUSE_POWER_TEST
 #include "muse_power_test.h"
@@ -56,6 +57,13 @@ void app_main(void) {
      * UI/voice/radio/credential or reconnect initialization may run. */
     muse_power_test_run();
     return;
+#endif
+#if CONFIG_HOMEHUB_BOOT_DIARY
+    // First, so the diary holds this boot's lines from the very start
+    // and the support log chains onto its sink.
+    if (!boot_diary_init()) {
+        ESP_LOGW("link.main", "boot diary capture disabled");
+    }
 #endif
 #if CONFIG_HOMEHUB_SUPPORT_BUG_REPORT
     if (!diagnostic_log_init()) {
